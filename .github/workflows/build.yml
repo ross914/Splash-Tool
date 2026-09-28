@@ -1,0 +1,80 @@
+name: Build Splash & Endboard Tool
+
+# Runs automatically whenever you push to main, and can also be triggered
+# manually from the Actions tab ("Run workflow" button) without needing a push.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: SplashEndboardTool-windows
+            pyinstaller_sep: ";"
+          - os: macos-latest
+            artifact_name: SplashEndboardTool-mac
+            pyinstaller_sep: ":"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      # ---------------- Windows: fetch a static ffmpeg build ----------------
+      - name: Download ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          mkdir ffmpeg_bin
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extracted
+          $bin = Get-ChildItem -Path ffmpeg_extracted -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          $probe = Get-ChildItem -Path ffmpeg_extracted -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          Copy-Item $bin.FullName ffmpeg_bin\ffmpeg.exe
+          Copy-Item $probe.FullName ffmpeg_bin\ffprobe.exe
+
+      # ---------------- macOS: install via Homebrew (preinstalled on runner) ----------------
+      - name: Get ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg
+          mkdir -p ffmpeg_bin
+          cp "$(which ffmpeg)" ffmpeg_bin/ffmpeg
+          cp "$(which ffprobe)" ffmpeg_bin/ffprobe
+
+      # ---------------- Build the app, bundling ffmpeg_bin alongside it ----------------
+      - name: Build with PyInstaller (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          pyinstaller --onefile --windowed --name "SplashEndboardTool"
+          --add-binary "ffmpeg_bin/ffmpeg.exe${{ matrix.pyinstaller_sep }}ffmpeg_bin"
+          --add-binary "ffmpeg_bin/ffprobe.exe${{ matrix.pyinstaller_sep }}ffmpeg_bin"
+          endboard_gui.py
+
+      - name: Build with PyInstaller (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          pyinstaller --onefile --windowed --name "SplashEndboardTool"
+          --add-binary "ffmpeg_bin/ffmpeg${{ matrix.pyinstaller_sep }}ffmpeg_bin"
+          --add-binary "ffmpeg_bin/ffprobe${{ matrix.pyinstaller_sep }}ffmpeg_bin"
+          endboard_gui.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/
